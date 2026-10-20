@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>播放器</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/aplayer@1.10.1/dist/APlayer.min.css">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden;
+    background: #0a0a0f; color: #fff;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    -webkit-tap-highlight-color: transparent; -webkit-text-size-adjust: 100%;
+    touch-action: manipulation; user-select: none; -webkit-user-select: none; }
+
+  /* 整屏封面模糊背景 + 缓慢呼吸缩放 */
+  #bg { position: fixed; inset: -60px; z-index: 0;
+    background-size: cover; background-position: center;
+    filter: blur(52px) brightness(.55) saturate(1.35);
+    opacity: 0; transition: opacity .9s ease;
+    animation: bgBreath 22s ease-in-out infinite alternate; }
+  #bg.on { opacity: 1; }
+  @keyframes bgBreath { from { transform: scale(1.14); } to { transform: scale(1.24); } }
+  #bgshade { position: fixed; inset: 0; z-index: 1;
+    background: linear-gradient(180deg, rgba(0,0,0,.22) 0%, rgba(0,0,0,.10) 40%, rgba(0,0,0,.42) 100%); }
+
+  /* 全屏舞台 */
+  #iosStage { position: relative; z-index: 2; height: 100dvh;
+    display: flex; flex-direction: column;
+    padding: calc(12px + env(safe-area-inset-top)) 30px calc(16px + env(safe-area-inset-bottom)); }
+
+  /* 加载状态 */
+  #hint { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 18px; color: rgba(255,255,255,.8); font-size: 15px; line-height: 1.7;
+    text-align: center; padding: 0 10px; }
+  /* iOS 菊花：12 根小棒依次变亮 */
+  #spinner { position: relative; width: 34px; height: 34px; }
+  #spinner i { position: absolute; left: 50%; top: 50%; width: 3px; height: 9px; margin: -13px 0 0 -1.5px;
+    border-radius: 2px; background: #fff; opacity: .12; transform-origin: 50% 13px;
+    animation: iosFade 1s linear infinite; }
+  #spinner i:nth-child(1)  { transform: rotate(0deg);   animation-delay: 0s; }
+  #spinner i:nth-child(2)  { transform: rotate(30deg);  animation-delay: -.9167s; }
+  #spinner i:nth-child(3)  { transform: rotate(60deg);  animation-delay: -.8333s; }
+  #spinner i:nth-child(4)  { transform: rotate(90deg);  animation-delay: -.75s; }
+  #spinner i:nth-child(5)  { transform: rotate(120deg); animation-delay: -.6667s; }
+  #spinner i:nth-child(6)  { transform: rotate(150deg); animation-delay: -.5833s; }
+  #spinner i:nth-child(7)  { transform: rotate(180deg); animation-delay: -.5s; }
+  #spinner i:nth-child(8)  { transform: rotate(210deg); animation-delay: -.4167s; }
+  #spinner i:nth-child(9)  { transform: rotate(240deg); animation-delay: -.3333s; }
+  #spinner i:nth-child(10) { transform: rotate(270deg); animation-delay: -.25s; }
+  #spinner i:nth-child(11) { transform: rotate(300deg); animation-delay: -.1667s; }
+  #spinner i:nth-child(12) { transform: rotate(330deg); animation-delay: -.0833s; }
+  @keyframes iosFade { 0% { opacity: 1; } 100% { opacity: .12; } }
+
+  #mainView { flex: 1; display: none; flex-direction: column; min-height: 0; }
+
+  /* 视图区：封面页时占满剩余高度；歌词模式收成 64px 页眉条，封面靠 transition 缩入页眉左端 */
+  #viewArea { position: relative; flex: 1 1 0%; min-height: 0;
+    transition: flex-grow .38s cubic-bezier(.32,.72,.28,1), flex-basis .38s cubic-bezier(.32,.72,.28,1); }
+  #mainView.lrc #viewArea { flex: 0 0 64px; }
+  #viewArea.shake { animation: viewShake .3s ease; }
+  @keyframes viewShake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-6px); } 75% { transform: translateX(6px); } }
+  #artwork { position: absolute; left: 50%; top: 50%; width: min(72vw, 40dvh, 340px);
+    aspect-ratio: 1 / 1; object-fit: cover; display: block;
+    transform: translate(-50%, -50%);
+    border-radius: 16px; background: rgba(255,255,255,.08);
+    box-shadow: 0 30px 60px rgba(0,0,0,.55), 0 6px 18px rgba(0,0,0,.35);
+    cursor: pointer; z-index: 3;
+    transition: all .38s cubic-bezier(.32,.72,.28,1); }
+  #mainView.lrc #artwork { left: 0; top: 7px; width: 50px; transform: none;
+    border-radius: 8px; box-shadow: 0 6px 16px rgba(0,0,0,.4); }
+
+  /* 歌名 / 歌手：与封面同一组元素——封面页在大封面正下方（大字），
+     歌词模式随封面一起平移到页眉小封面右侧，字号同步缩小，全程一条连贯动画 */
+  #meta { position: absolute; left: 0; right: 0; margin: 0;
+    top: calc(50% + min(36vw, 20dvh, 170px) + 16px);
+    transition: top .38s cubic-bezier(.32,.72,.28,1), left .38s cubic-bezier(.32,.72,.28,1); }
+  #mainView.lrc #meta { left: 62px; top: 13px; }
+  #songName { font-size: 22px; font-weight: 700; line-height: 1.3; letter-spacing: .01em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    transition: font-size .38s cubic-bezier(.32,.72,.28,1); }
+  #songArtist { margin-top: 3px; font-size: 22px; font-weight: 400; line-height: 1.3; color: rgba(255,255,255,.55);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    transition: font-size .38s cubic-bezier(.32,.72,.28,1), margin-top .38s cubic-bezier(.32,.72,.28,1); }
+  #mainView.lrc #songName { font-size: 15.5px; }
+  #mainView.lrc #songArtist { font-size: 12.5px; margin-top: 2px; }
+
+  /* iOS 风进度条 */
+  #seek { margin-top: 18px; }
+  #seekBar { position: relative; height: 22px; display: flex; align-items: center; cursor: pointer; touch-action: none; }
+  #seekTrack { position: relative; width: 100%; height: 5px; border-radius: 3px;
+    background: rgba(255,255,255,.30); }
+  #seekFill { position: absolute; left: 0; top: 0; bottom: 0; width: 0%;
+    border-radius: 3px; background: #fff; }
+  #seekDot { position: absolute; top: 50%; left: 0%; width: 11px; height: 11px; border-radius: 50%;
+    background: #fff; transform: translate(-50%, -50%) scale(1);
+    transition: transform .18s ease; box-shadow: 0 1px 5px rgba(0,0,0,.35); }
+  #seekBar.scrubbing #seekDot { transform: translate(-50%, -50%) scale(1.7); }
+  #seekTimes { display: flex; justify-content: space-between; margin-top: 2px;
+    font-size: 12.5px; font-weight: 500; color: rgba(255,255,255,.55);
+    font-variant-numeric: tabular-nums; }
+
+  /* 控制区 */
+  #controls { display: flex; align-items: center; justify-content: space-between;
+    margin-top: 14px; padding: 0 16px; }
+  .ctlBtn { background: none; border: 0; padding: 10px; margin: 0; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; }
+  .ctlBtn:active { opacity: .55; }
+  .ctlBtn svg { display: block; }
+  #btnPlay { padding: 6px; }
+
+  /* 底部功能行 */
+  #dock { display: flex; align-items: center; justify-content: space-between;
+    margin-top: 16px; padding: 0 8px; }
+  .dockBtn { background: none; border: 0; cursor: pointer; padding: 9px 14px; border-radius: 999px;
+    display: flex; align-items: center; gap: 6px;
+    color: rgba(255,255,255,.55); font-size: 13px; font-weight: 600; font-family: inherit; }
+  .dockBtn svg { display: block; }
+  .dockBtn.on { color: #fff; background: rgba(255,255,255,.16); }
+  .dockBtn.off { opacity: .32; pointer-events: none; }
+  .dockBtn:active { opacity: .6; }
+
+  /* 歌词层：独立成页——位于页眉（viewArea 收缩后）与底部控制区之间，占满两者之间的全部高度，只负责滚动 */
+  #lrcScroll { position: relative; flex: 0 0 0px; min-height: 0; overflow: hidden;
+    -webkit-overflow-scrolling: touch; scrollbar-width: none;
+    opacity: 0; visibility: hidden; transform: translateY(14px); pointer-events: none;
+    transition: flex-grow .38s cubic-bezier(.32,.72,.28,1), flex-basis .38s cubic-bezier(.32,.72,.28,1),
+      opacity .3s ease, transform .38s cubic-bezier(.32,.72,.28,1), visibility 0s linear .38s; }
+  #mainView.lrc #lrcScroll { flex: 1 1 0px; overflow-y: auto;
+    opacity: 1; visibility: visible; transform: none; pointer-events: auto;
+    transition: flex-grow .38s cubic-bezier(.32,.72,.28,1), flex-basis .38s cubic-bezier(.32,.72,.28,1),
+      opacity .3s ease .05s, transform .38s cubic-bezier(.32,.72,.28,1), visibility 0s; }
+  #lrcScroll::-webkit-scrollbar { display: none; }
+  #lrcInner { padding: 12px 4px 36dvh; }
+  .lrcline { font-size: 17.5px; font-weight: 600; line-height: 1.6; text-align: center;
+    color: rgba(255,255,255,.42);
+    padding: 8px 0; transition: color .3s ease, font-size .3s ease; word-break: break-word; }
+  .lrcline.cur { color: #fff; font-size: 19px; font-weight: 800; }
+  .lrcline.empty { color: rgba(255,255,255,.55); font-weight: 500; }
+
+  /* APlayer 隐藏容器：只当引擎，不露原生 UI */
+  #player { position: fixed; left: -9999px; top: 0; width: 320px; height: 120px;
+    opacity: 0; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="bg"></div>
+<div id="bgshade"></div>
+<div id="iosStage">
+  <div id="hint">
+    <div id="spinner"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+    <span id="hintText">加载中…</span>
+  </div>
+
+  <div id="mainView">
+    <div id="viewArea">
+      <img id="artwork" alt="">
+      <div id="meta">
+        <div id="songName"></div>
+        <div id="songArtist"></div>
+      </div>
+    </div>
+    <div id="lrcScroll"><div id="lrcInner"></div></div>
+    <div id="seek">
+      <div id="seekBar"><div id="seekTrack"><div id="seekFill"></div><div id="seekDot"></div></div></div>
+      <div id="seekTimes"><span id="tCur">0:00</span><span id="tRem">-0:00</span></div>
+    </div>
+    <div id="controls">
+      <button class="ctlBtn" id="btnBack15" aria-label="后退 15 秒">
+        <svg width="46" height="46" viewBox="0 0 48 48" fill="none">
+          <path d="M24.5 7.5a16.5 16.5 0 1 1-11.7 4.8" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+          <path d="M11.6 3.6v9.6h9.6" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+          <text x="24" y="30.5" font-size="12.5" font-weight="700" fill="#fff" text-anchor="middle" font-family="-apple-system, sans-serif">15</text>
+        </svg>
+      </button>
+      <button class="ctlBtn" id="btnPlay" aria-label="播放或暂停">
+        <svg id="icoPlay" width="68" height="68" viewBox="0 0 48 48"><path d="M17 10.5v27c0 1.8 2 2.9 3.5 2l16.6-13.5c1.1-.9 1.1-2.6 0-3.5L20.5 8.6C19 7.6 17 8.7 17 10.5z" fill="#fff"/></svg>
+        <svg id="icoPause" width="68" height="68" viewBox="0 0 48 48" style="display:none"><rect x="14" y="10" width="7.5" height="28" rx="2.4" fill="#fff"/><rect x="26.5" y="10" width="7.5" height="28" rx="2.4" fill="#fff"/></svg>
+      </button>
+      <button class="ctlBtn" id="btnFwd15" aria-label="前进 15 秒">
+        <svg width="46" height="46" viewBox="0 0 48 48" fill="none">
+          <path d="M23.5 7.5a16.5 16.5 0 1 0 11.7 4.8" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+          <path d="M36.4 3.6v9.6h-9.6" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+          <text x="24" y="30.5" font-size="12.5" font-weight="700" fill="#fff" text-anchor="middle" font-family="-apple-system, sans-serif">15</text>
+        </svg>
+      </button>
+    </div>
+    <div id="dock">
+      <button class="dockBtn off" id="btnLyrics" aria-label="歌词">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M4 4.5h16a1 1 0 0 1 1 1V15a1 1 0 0 1-1 1H9.4L5 19.6V5.5a1 1 0 0 1 1-1z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M8.5 9h7M8.5 12.2h4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        歌词
+      </button>
+      <button class="dockBtn" id="btnLoop" aria-label="单曲循环">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M17.5 3.8 21 7.3l-3.5 3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.5 7.3h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M6.5 20.2 3 16.7l3.5-3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M20.5 16.7h-14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        循环
+      </button>
+    </div>
+  </div>
+</div>
+<div id="player"></div>
+<script src="https://cdn.jsdelivr.net/npm/aplayer@1.10.1/dist/APlayer.min.js"></script>
+<script>
+(function () {
+  var hint = document.getElementById("hint");
+  var spinner = document.getElementById("spinner");
+  var hintText = document.getElementById("hintText");
+  var id = new URLSearchParams(location.search).get("id") || "";
+  if (!/^\d+$/.test(id)) {
+    spinner.style.display = "none";
+    hintText.textContent = "没有指定歌曲。在群里对机器人发 /网易云 <歌名>，点它给的播放链接来听。";
+    return;
+  }
+  var api = "https://api.qijieya.cn/meting/?server=netease&type=song&id=" + encodeURIComponent(id);
+  fetch(api)
+    .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+    .then(function (list) {
+      var s = Array.isArray(list) ? list[0] : null;
+      if (!s || !s.url) throw new Error("empty");
+      document.title = (s.name || "歌曲") + (s.artist ? " - " + s.artist : "");
+      hint.style.display = "none";
+
+      if (s.pic) {
+        var bg = document.getElementById("bg");
+        bg.style.backgroundImage = "url('" + s.pic + "')";
+        bg.classList.add("on");
+        document.getElementById("artwork").src = s.pic;
+      }
+      document.getElementById("songName").textContent = s.name || "歌曲";
+      document.getElementById("songArtist").textContent = s.artist || "";
+      var mainView = document.getElementById("mainView");
+      mainView.style.display = "flex";
+
+      var viewArea = document.getElementById("viewArea");
+      var artwork = document.getElementById("artwork");
+      var icoPlay = document.getElementById("icoPlay");
+      var icoPause = document.getElementById("icoPause");
+      var seekBar = document.getElementById("seekBar");
+      var seekFill = document.getElementById("seekFill");
+      var seekDot = document.getElementById("seekDot");
+      var tCur = document.getElementById("tCur");
+      var tRem = document.getElementById("tRem");
+      var btnLyrics = document.getElementById("btnLyrics");
+      var loopOn = false;
+      var scrubbing = false;
+
+      /* 视图状态机：cover（封面页） <-> lrc（歌词页），封面点击与「歌词」按钮共用 */
+      var view = "cover";
+      var switching = false;
+      var lrcState = "loading";   /* loading | ready | empty */
+
+      var ap = new APlayer({
+        container: document.getElementById("player"),
+        theme: "#ec4141",
+        lrcType: 1,
+        loop: "none",
+        autoplay: true,
+        audio: [{
+          name: s.name || "歌曲",
+          artist: s.artist || "",
+          url: s.url,
+          cover: s.pic,
+          lrc: s.lrc
+        }]
+      });
+
+      function fmt(t) {
+        if (!isFinite(t) || t < 0) t = 0;
+        var m = Math.floor(t / 60), sec = Math.floor(t % 60);
+        return m + ":" + (sec < 10 ? "0" : "") + sec;
+      }
+      function refreshProgress() {
+        var a = ap.audio, dur = a.duration || 0, cur = a.currentTime || 0;
+        var pct = dur > 0 ? (cur / dur) * 100 : 0;
+        if (!scrubbing) {
+          seekFill.style.width = pct + "%";
+          seekDot.style.left = pct + "%";
+          tCur.textContent = fmt(cur);
+          tRem.textContent = "-" + fmt(dur > 0 ? Math.max(dur - cur, 0) : 0);
+        }
+        syncLrc(cur);
+      }
+      function setPlayingUI(playing) {
+        icoPlay.style.display = playing ? "none" : "block";
+        icoPause.style.display = playing ? "block" : "none";
+      }
+      ap.on("play", function () { setPlayingUI(true); });
+      ap.on("pause", function () { setPlayingUI(false); });
+      ap.on("ended", function () {
+        if (loopOn) { ap.seek(0); ap.play(); return; }
+        setPlayingUI(false); refreshProgress();
+      });
+      ap.on("timeupdate", refreshProgress);
+      ap.on("loadedmetadata", refreshProgress);
+      ap.on("seeked", refreshProgress);
+
+      document.getElementById("btnPlay").addEventListener("click", function () { ap.toggle(); });
+      document.getElementById("btnBack15").addEventListener("click", function () {
+        ap.seek(Math.max((ap.audio.currentTime || 0) - 15, 0));
+      });
+      document.getElementById("btnFwd15").addEventListener("click", function () {
+        var dur = ap.audio.duration || 0;
+        ap.seek(dur > 0 ? Math.min((ap.audio.currentTime || 0) + 15, dur) : (ap.audio.currentTime || 0) + 15);
+      });
+      var btnLoop = document.getElementById("btnLoop");
+      btnLoop.addEventListener("click", function () {
+        loopOn = !loopOn;
+        btnLoop.classList.toggle("on", loopOn);
+      });
+
+      /* 进度条拖动 seek */
+      function ratioFromEvent(e) {
+        var r = seekBar.getBoundingClientRect();
+        var x = (e.clientX - r.left) / r.width;
+        return Math.min(Math.max(x, 0), 1);
+      }
+      function paintScrub(ratio) {
+        seekFill.style.width = (ratio * 100) + "%";
+        seekDot.style.left = (ratio * 100) + "%";
+        var dur = ap.audio.duration || 0;
+        tCur.textContent = fmt(ratio * dur);
+        tRem.textContent = "-" + fmt(Math.max(dur - ratio * dur, 0));
+      }
+      seekBar.addEventListener("pointerdown", function (e) {
+        if (!(ap.audio.duration > 0)) return;
+        scrubbing = true;
+        seekBar.classList.add("scrubbing");
+        seekBar.setPointerCapture(e.pointerId);
+        paintScrub(ratioFromEvent(e));
+      });
+      seekBar.addEventListener("pointermove", function (e) {
+        if (scrubbing) paintScrub(ratioFromEvent(e));
+      });
+      function endScrub(e) {
+        if (!scrubbing) return;
+        scrubbing = false;
+        seekBar.classList.remove("scrubbing");
+        ap.seek(ratioFromEvent(e) * (ap.audio.duration || 0));
+      }
+      seekBar.addEventListener("pointerup", endScrub);
+      seekBar.addEventListener("pointercancel", endScrub);
+
+      /* 歌词：自行抓取并解析同一份 lrc，整屏滚动 */
+      var lrcLines = null;   // [{t, text}]
+      var lrcCur = -1;
+      var lrcHoldUntil = 0;
+      var lrcScroll = document.getElementById("lrcScroll");
+      var lrcInner = document.getElementById("lrcInner");
+      function parseLrc(text) {
+        var out = [];
+        text.split(/\r?\n/).forEach(function (line) {
+          var m, re = /\[(\d+):(\d+(?:\.\d+)?)\]/g, tags = [];
+          while ((m = re.exec(line)) !== null) tags.push(parseInt(m[1], 10) * 60 + parseFloat(m[2]));
+          if (!tags.length) return;
+          var txt = line.replace(/\[[^\]]*\]/g, "").trim();
+          if (!txt) return;
+          tags.forEach(function (t) { out.push({ t: t, text: txt }); });
+        });
+        out.sort(function (a, b) { return a.t - b.t; });
+        return out;
+      }
+      function renderLrc() {
+        lrcInner.innerHTML = "";
+        lrcCur = -1;
+        if (!lrcLines || !lrcLines.length) {
+          var d = document.createElement("div");
+          d.className = "lrcline empty";
+          d.textContent = "暂无歌词";
+          lrcInner.appendChild(d);
+          return;
+        }
+        lrcLines.forEach(function (ln) {
+          var d = document.createElement("div");
+          d.className = "lrcline";
+          d.textContent = ln.text;
+          lrcInner.appendChild(d);
+        });
+      }
+      function syncLrc(cur) {
+        if (!lrcLines || !lrcLines.length) return;
+        if (view !== "lrc") return;
+        var idx = -1;
+        for (var i = 0; i < lrcLines.length; i++) {
+          if (lrcLines[i].t <= cur + 0.05) idx = i; else break;
+        }
+        if (idx === lrcCur) return;
+        lrcCur = idx;
+        var kids = lrcInner.children;
+        for (var j = 0; j < kids.length; j++) kids[j].classList.toggle("cur", j === idx);
+        if (idx >= 0 && Date.now() > lrcHoldUntil) {
+          var target = kids[idx].offsetTop - lrcScroll.clientHeight * 0.40;
+          lrcScroll.scrollTo({ top: Math.max(target, 0), behavior: "smooth" });
+        }
+      }
+      function settleLrc(lines) {
+        lrcLines = lines;
+        renderLrc();
+        if (lines && lines.length) {
+          lrcState = "ready";
+          btnLyrics.classList.remove("off");
+        } else {
+          lrcState = "empty";   /* 「歌词」按钮保持置灰不可点 */
+        }
+      }
+      if (s.lrc) {
+        fetch(s.lrc)
+          .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
+          .then(function (text) { settleLrc(parseLrc(text)); })
+          .catch(function () { settleLrc([]); });
+      } else { settleLrc([]); }
+      lrcScroll.addEventListener("touchstart", function () { lrcHoldUntil = Date.now() + 3000; }, { passive: true });
+      lrcScroll.addEventListener("wheel", function () { lrcHoldUntil = Date.now() + 3000; }, { passive: true });
+
+      /* 视图切换：唯一入口，封面点击与「歌词」按钮共用同一状态机 */
+      function setView(v) {
+        if (switching || view === v) return;
+        if (v === "lrc" && lrcState !== "ready") return;
+        switching = true;
+        view = v;
+        mainView.classList.toggle("lrc", v === "lrc");
+        btnLyrics.classList.toggle("on", v === "lrc");
+        setTimeout(function () { switching = false; }, 330);
+        if (v === "lrc") { lrcCur = -1; refreshProgress(); }
+      }
+      function shakeArtwork() {
+        viewArea.classList.remove("shake");
+        void viewArea.offsetWidth;
+        viewArea.classList.add("shake");
+      }
+      viewArea.addEventListener("animationend", function () { viewArea.classList.remove("shake"); });
+      artwork.addEventListener("click", function () {
+        if (view === "lrc") { setView("cover"); return; }
+        if (lrcState === "ready") setView("lrc");
+        else if (lrcState === "empty") shakeArtwork();
+        /* 歌词还在加载：无操作 */
+      });
+      btnLyrics.addEventListener("click", function () {
+        if (view === "lrc") setView("cover");
+        else if (lrcState === "ready") setView("lrc");
+      });
+    })
+    .catch(function () {
+      spinner.style.display = "none";
+      hintText.textContent = "加载失败，换首歌试试。";
+    });
+})();
+</script>
+</body>
+</html>
